@@ -1,4 +1,2 @@
 ﻿  ProcessHollowingPE.cpp
-C:\Users\user\source\repos\ProcessHollowingPE\ProcessHollowingPE\ProcessHollowingPE.cpp(133,149): warning C4312: 'cast de type' : la conversion de 'DWORD' en 'LPVOID' d'une taille supérieure
-C:\Users\user\source\repos\ProcessHollowingPE\ProcessHollowingPE\ProcessHollowingPE.cpp(166,120): warning C4312: 'cast de type' : la conversion de 'DWORD' en 'LPVOID' d'une taille supérieure
   ProcessHollowingPE.vcxproj -> C:\Users\user\source\repos\ProcessHollowingPE\x64\Debug\ProcessHollowingPE.exe
