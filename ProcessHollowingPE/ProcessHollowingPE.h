@@ -47,17 +47,10 @@ typedef NTSTATUS(NTAPI* _NtWriteVirtualMemory)(HANDLE, PVOID, LPCVOID, SIZE_T, P
 typedef NTSTATUS(NTAPI* _NtReadVirtualMemory)(HANDLE, PVOID, PVOID, ULONG, PULONG);
 typedef NTSTATUS(NTAPI* _NtAllocateVirtualMemory)(HANDLE ProcessHandle, PVOID* BaseAddress, ULONG_PTR ZeroBits, PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
 typedef NTSTATUS(NTAPI* _NtCreateThreadEx)(PHANDLE, ACCESS_MASK, PVOID, HANDLE, LPTHREAD_START_ROUTINE, PVOID, ULONG, SIZE_T, SIZE_T, SIZE_T, PVOID);
-typedef NTSTATUS(NTAPI* _NtThreadContext)(HANDLE, PULONG);
+typedef NTSTATUS(NTAPI* _NtResumeThread)(HANDLE, PULONG);
 typedef NTSTATUS(NTAPI* _NtWaitForSingleObject)(HANDLE, BOOLEAN, PLARGE_INTEGER);
-
-
-using NtUnmapViewOfSection = NTSTATUS(WINAPI*)(HANDLE, PVOID);
-
-typedef NTSTATUS(NTAPI* _NtQueryInformationProcess)(HANDLE ProcessHandle,
-	DWORD ProcessInformationClass,
-	PVOID ProcessInformation,
-	DWORD ProcessInformationLength,
-	PDWORD ReturnLength);
+typedef NTSTATUS(NTAPI* _NtGetContextThread)(HANDLE, PCONTEXT);
+typedef NTSTATUS(NTAPI* _NtSetContextThread)(HANDLE, PCONTEXT);
 
 
 typedef struct BASE_RELOCATION_BLOCK {

