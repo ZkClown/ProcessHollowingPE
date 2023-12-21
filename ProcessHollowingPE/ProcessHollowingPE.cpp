@@ -272,7 +272,7 @@ bool copyPEinTargetProcess(HANDLE pHandle, LPVOID& allocAddrOnTarget, PPE_STRUCT
 	return TRUE;
 }
 
-bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget)
+bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget, DWORD64 DeltaImageBase)
 {
 	_dbg("[+] Fixing relocation table.\n");
 	PPE_SECTION relocSection = getSection(myPE, (PCHAR)".reloc");
@@ -281,8 +281,6 @@ bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget)
 		_dbg("No Reloc Table\r\n");
 		return TRUE;
 	}
-
-	DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - myPE->ntHeader->OptionalHeader.ImageBase;
 
 	DWORD RelocOffset = 0;
 	DWORD sizeF = myPE->ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
@@ -302,23 +300,15 @@ bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget)
 				continue;
 
 			DWORD64 AddressLocation = (DWORD64)allocAddrOnTarget + currentReloc->VirtualAddress + currentRelocEntry->Offset;
-			DWORD64 PatchedAddress = 0;
 
+			PDWORD64 PatchedAddress = (PDWORD64)((PBYTE)myPE->imageBase + currentReloc->VirtualAddress + currentRelocEntry->Offset);
+			PatchedAddress = (PDWORD64)((PBYTE)PatchedAddress - getOffsetFromAddr(myPE, PatchedAddress));
 
-			NTSTATUS status = myNtRead(pHandle, (LPVOID)AddressLocation, &PatchedAddress, sizeof(DWORD64), nullptr);
+			_dbg("\t[+] Address To Patch: %p -> Address Patched: %p \r\n", (PVOID)*PatchedAddress, (PVOID)(*PatchedAddress + DeltaImageBase));
 
-			PDWORD64 test = (PDWORD64)((PBYTE)myPE->imageBase + currentReloc->VirtualAddress + currentRelocEntry->Offset);
-			test = (PDWORD64)((PBYTE)test - getOffsetFromAddr(myPE, test));
-			if (status != 0)
-			{
-				_err("[-] ERROR: Cannot read target process memory at %p, ERROR CODE: %x\r\n", (LPVOID)((UINT64)AddressLocation), GetLastError());
-				return FALSE;
-			}
-			_dbg("\t[+] Address To Patch: %p -> Address Patched: %p \r\n", (VOID*)PatchedAddress, (VOID*)(PatchedAddress + DeltaImageBase));
+			*PatchedAddress += DeltaImageBase;
 
-			PatchedAddress += DeltaImageBase;
-
-			status = myNtWrite(pHandle, (LPVOID)AddressLocation, &PatchedAddress, sizeof(DWORD64), nullptr);
+			NTSTATUS status = myNtWrite(pHandle, (LPVOID)AddressLocation, PatchedAddress, sizeof(DWORD64), nullptr);
 			if (status != 0)
 			{
 				_err("[-] ERROR: Cannot write into target process memory at %p, ERROR CODE: %x\r\n", (LPVOID)((UINT64)AddressLocation), GetLastError());
@@ -926,7 +916,7 @@ int main(int argc, char** argv)
 
 	LPVOID allocAddrOnTarget = NULL;
 	allocAddrOnTarget = VirtualAllocEx(pi->hProcess, NULL,  myPE->ntHeader->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-	
+	DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - myPE->ntHeader->OptionalHeader.ImageBase;
 
 	if (allocAddrOnTarget == NULL)
 	{
@@ -943,7 +933,7 @@ int main(int argc, char** argv)
 	if (!copyPEinTargetProcess(pi->hProcess, allocAddrOnTarget, myPE))
 		exit(1);
 
-	if (!fixRelocTable(pi->hProcess, myPE, allocAddrOnTarget))
+	if (!fixRelocTable(pi->hProcess, myPE, allocAddrOnTarget, DeltaImageBase))
 		exit(1);
 
 	if (!loadImportTableLibs(myPE, pi, allocAddrOnTarget))
