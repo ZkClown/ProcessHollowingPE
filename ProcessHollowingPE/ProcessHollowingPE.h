@@ -33,6 +33,24 @@
 #define _inf(format, ...)
 #endif
 
+#define DATA_FREE( d, l ) \
+    if ( d ) \
+    { \
+        memset( d, 0, l ); \
+        LocalFree( d ); \
+        d = NULL; \
+    }
+
+
+typedef NTSTATUS(NTAPI* _NtProtectVirtualMemory)(HANDLE, PVOID, PULONG, ULONG, PULONG);
+typedef NTSTATUS(NTAPI* _NtWriteVirtualMemory)(HANDLE, PVOID, LPCVOID, SIZE_T, PSIZE_T);
+typedef NTSTATUS(NTAPI* _NtReadVirtualMemory)(HANDLE, PVOID, PVOID, ULONG, PULONG);
+typedef NTSTATUS(NTAPI* _NtAllocateVirtualMemory)(HANDLE ProcessHandle, PVOID* BaseAddress, ULONG_PTR ZeroBits, PSIZE_T RegionSize, ULONG AllocationType, ULONG Protect);
+typedef NTSTATUS(NTAPI* _NtCreateThreadEx)(PHANDLE, ACCESS_MASK, PVOID, HANDLE, LPTHREAD_START_ROUTINE, PVOID, ULONG, SIZE_T, SIZE_T, SIZE_T, PVOID);
+typedef NTSTATUS(NTAPI* _NtThreadContext)(HANDLE, PULONG);
+typedef NTSTATUS(NTAPI* _NtWaitForSingleObject)(HANDLE, BOOLEAN, PLARGE_INTEGER);
+
+
 using NtUnmapViewOfSection = NTSTATUS(WINAPI*)(HANDLE, PVOID);
 
 typedef NTSTATUS(NTAPI* _NtQueryInformationProcess)(HANDLE ProcessHandle,
@@ -84,3 +102,19 @@ typedef struct _API_SET_VALUE_ENTRY {
 	ULONG ValueLength;
 } API_SET_VALUE_ENTRY, * PAPI_SET_VALUE_ENTRY;
 
+
+typedef struct _PE_SECTION
+{
+	PIMAGE_SECTION_HEADER header;
+	PVOID addrSection;
+}PE_SECTION, * PPE_SECTION;
+
+typedef struct _PE_STRUCT
+{
+	PVOID imageBase;
+	PIMAGE_DOS_HEADER dosHeader;
+	PIMAGE_NT_HEADERS ntHeader;
+	PVOID* dataDirectories;
+	PPE_SECTION sections;
+
+} PE_STRUCT, * PPE_STRUCT;
