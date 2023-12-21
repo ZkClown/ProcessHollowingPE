@@ -272,7 +272,7 @@ bool copyPEinTargetProcess(HANDLE pHandle, LPVOID& allocAddrOnTarget, PPE_STRUCT
 	return TRUE;
 }
 
-bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget, DWORD64 DeltaImageBase)
+bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget)
 {
 	_dbg("[+] Fixing relocation table.\n");
 	PPE_SECTION relocSection = getSection(myPE, (PCHAR)".reloc");
@@ -281,6 +281,8 @@ bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget, D
 		_dbg("No Reloc Table\r\n");
 		return TRUE;
 	}
+
+	DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - myPE->ntHeader->OptionalHeader.ImageBase;
 
 	DWORD RelocOffset = 0;
 	DWORD sizeF = myPE->ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
@@ -924,7 +926,7 @@ int main(int argc, char** argv)
 
 	LPVOID allocAddrOnTarget = NULL;
 	allocAddrOnTarget = VirtualAllocEx(pi->hProcess, NULL,  myPE->ntHeader->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-	DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - myPE->ntHeader->OptionalHeader.ImageBase;
+	
 
 	if (allocAddrOnTarget == NULL)
 	{
@@ -941,7 +943,7 @@ int main(int argc, char** argv)
 	if (!copyPEinTargetProcess(pi->hProcess, allocAddrOnTarget, myPE))
 		exit(1);
 
-	if (!fixRelocTable(pi->hProcess, myPE, allocAddrOnTarget, DeltaImageBase))
+	if (!fixRelocTable(pi->hProcess, myPE, allocAddrOnTarget))
 		exit(1);
 
 	if (!loadImportTableLibs(myPE, pi, allocAddrOnTarget))
