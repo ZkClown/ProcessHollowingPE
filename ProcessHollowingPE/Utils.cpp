@@ -88,6 +88,17 @@ BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn)
 	return TRUE;
 }
 
+PWSTR strToWstr(PCHAR str)
+{
+	SIZE_T size = strlen(str);
+	PWSTR out = (PWSTR)LocalAlloc(LPTR, size * 2 + 2);
+	if (!out)
+		return nullptr;
+	for (int i = 0; i < size; ++i)
+		out[i] = str[i];
+	return out;
+}
+
 PCHAR strConcat(PCHAR str1, PCHAR str2)
 {
 	SIZE_T size1 = strlen(str1);

