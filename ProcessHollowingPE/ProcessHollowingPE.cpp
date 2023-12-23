@@ -742,7 +742,7 @@ int main(int argc, char** argv)
 	}
 		
 
-	if (!launchSusprendedProcess((LPSTR)target, pi, (PCHAR)args, hStdOut))
+	if (!launchSuspendedProcess((LPSTR)target, pi, (PCHAR)args, hStdOut))
 		exit(1);
 
 	LPVOID allocAddrOnTarget = NULL;

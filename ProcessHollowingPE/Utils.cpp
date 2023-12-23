@@ -53,14 +53,14 @@ BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn)
 		return FALSE;
 
 	}
-	DWORD peSize = GetFileSize(hPe, NULL);
-	*peSizeReturn = peSize;
+	
+	*peSizeReturn = GetFileSize(hPe, NULL);
 
 	_dbg("[+] DLL %s loaded\r\n", peName);
-	_dbg("[+] DLL size: %lu bytes \r\n", peSize);
+	_dbg("[+] DLL size: %lu bytes \r\n", *peSizeReturn);
 
 
-	peContent = LocalAlloc(LPTR, peSize);
+	peContent = LocalAlloc(LPTR, *peSizeReturn);
 	if (peContent == NULL)
 	{
 
@@ -68,7 +68,7 @@ BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn)
 
 		return FALSE;
 	}
-	if (!ReadFile(hPe, peContent, peSize, NULL, NULL))
+	if (!ReadFile(hPe, peContent, *peSizeReturn, NULL, NULL))
 	{
 
 		_err("[-] ERROR copying Dll in HEAP \r\n");
@@ -118,7 +118,7 @@ PCHAR strConcat(PCHAR str1, PCHAR str2)
 	return out;
 }
 
-BOOL launchSusprendedProcess(LPSTR processName, LPPROCESS_INFORMATION& pi, PCHAR args, HANDLE& hStdOutPipeRead)
+BOOL launchSuspendedProcess(LPSTR processName, LPPROCESS_INFORMATION pi, PCHAR args, HANDLE& hStdOutPipeRead)
 {
 
 	HANDLE hStdOutPipeWrite = NULL;
