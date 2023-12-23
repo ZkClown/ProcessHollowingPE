@@ -42,7 +42,7 @@ BOOL readPipe(HANDLE hPipe, PVOID* data, PDWORD dataLen)
 }
 
 
-BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn)
+BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent)
 {
 	HANDLE hPe = NULL;
 	hPe = CreateFileA(peName, GENERIC_READ, NULL, NULL, OPEN_EXISTING, NULL, NULL);
@@ -53,14 +53,13 @@ BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn)
 		return FALSE;
 
 	}
-	
-	*peSizeReturn = GetFileSize(hPe, NULL);
+	DWORD peSize = GetFileSize(hPe, NULL);
 
 	_dbg("[+] DLL %s loaded\r\n", peName);
-	_dbg("[+] DLL size: %lu bytes \r\n", *peSizeReturn);
+	_dbg("[+] DLL size: %lu bytes \r\n", peSize);
 
 
-	peContent = LocalAlloc(LPTR, *peSizeReturn);
+	peContent = LocalAlloc(LPTR, peSize);
 	if (peContent == NULL)
 	{
 
@@ -68,7 +67,7 @@ BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent, PDWORD peSizeReturn)
 
 		return FALSE;
 	}
-	if (!ReadFile(hPe, peContent, *peSizeReturn, NULL, NULL))
+	if (!ReadFile(hPe, peContent, peSize, NULL, NULL))
 	{
 
 		_err("[-] ERROR copying Dll in HEAP \r\n");

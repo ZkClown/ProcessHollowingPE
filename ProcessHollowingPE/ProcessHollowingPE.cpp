@@ -727,11 +727,10 @@ int main(int argc, char** argv)
 	LPCSTR target = "C:\\Windows\\System32\\svchost.exe";
 
 	LPVOID peToInjectContent = NULL;
-	DWORD peSize = 0;
 
 	HANDLE hStdOut = nullptr;
 
-	if (!loadPEFromDisk(peInject, peToInjectContent, &peSize))
+	if (!loadPEFromDisk(peInject, peToInjectContent))
 		exit(1);
 
 	PPE_STRUCT myPE = createPEStrcut(peToInjectContent);
