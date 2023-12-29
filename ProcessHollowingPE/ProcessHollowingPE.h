@@ -15,6 +15,8 @@ typedef NTSTATUS(NTAPI* _NtWaitForSingleObject)(HANDLE, BOOLEAN, PLARGE_INTEGER)
 typedef NTSTATUS(NTAPI* _NtGetContextThread)(HANDLE, PCONTEXT);
 typedef NTSTATUS(NTAPI* _NtSetContextThread)(HANDLE, PCONTEXT);
 
+typedef NTSTATUS(NTAPI* _NtQueryInformationProcess)(HANDLE ProcessHandle, DWORD ProcessInformationClass, PVOID ProcessInformation, DWORD ProcessInformationLength,PDWORD ReturnLength);
+typedef NTSTATUS(NTAPI* _NtUnmapViewOfSection)(HANDLE ProcesHandle, PVOID BaseAddress);
 
 typedef struct BASE_RELOCATION_BLOCK {
 	DWORD PageAddress;

