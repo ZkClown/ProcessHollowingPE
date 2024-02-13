@@ -41,19 +41,6 @@ bool copyPEinTargetProcess(HANDLE pHandle, LPVOID allocAddrOnTarget, PPE_STRUCT 
 		}
 		_dbg("\t[+] Section %s written at : 0x%p.\n", (LPSTR)myPE->sections[i].header->Name, (LPVOID)((UINT64)allocAddrOnTarget + myPE->sections[i].header->VirtualAddress));
 
-		if (!strcmp((char*)myPE->sections[i].header->Name, ".text"))
-		{
-			ULONG oldProtect = 0;
-			PVOID addr = (LPVOID)((UINT64)allocAddrOnTarget + myPE->sections[i].header->VirtualAddress);
-			status = myNtProtec(pHandle, &addr,(PULONG) & byteWritten, PAGE_EXECUTE_READ, &oldProtect);
-			if (status != 0)
-			{
-				_err("Error in changing permissions on .text sections to RX -> 0x%x\r\n", status);
-				return FALSE;
-			}
-			_dbg("\t[+] Permissions changed to RX on .text section \r\n");
-		}
-
 
 	}
 	return TRUE;
