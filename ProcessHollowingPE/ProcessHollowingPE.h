@@ -60,3 +60,8 @@ typedef struct _API_SET_VALUE_ENTRY {
 	ULONG ValueLength;
 } API_SET_VALUE_ENTRY, * PAPI_SET_VALUE_ENTRY;
 
+typedef struct IO
+{
+	HANDLE hStd;
+	HANDLE hThread;
+}IO, *PIO;

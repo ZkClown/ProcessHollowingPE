@@ -117,10 +117,13 @@ PCHAR strConcat(PCHAR str1, PCHAR str2)
 	return out;
 }
 
-BOOL launchSuspendedProcess(LPSTR processName, LPPROCESS_INFORMATION pi, PCHAR args, HANDLE& hStdOutPipeRead)
+BOOL launchSuspendedProcess(LPSTR processName, LPPROCESS_INFORMATION pi,  HANDLE& hStdOutPipeRead, HANDLE& htStdInPipeWrite)
 {
-
 	HANDLE hStdOutPipeWrite = NULL;
+	HANDLE hStdInPipeRead = NULL;
+
+
+
 	SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
 	STARTUPINFOA si = { 0 };
 
@@ -128,19 +131,24 @@ BOOL launchSuspendedProcess(LPSTR processName, LPPROCESS_INFORMATION pi, PCHAR a
 	//Creating Pipe for output of exe
 	if (!CreatePipe(&hStdOutPipeRead, &hStdOutPipeWrite, &sa, 0))
 	{
-		_err("[CMD] Failed Output pipe");
+		_err("[CMD] Failed Output pipe: %x\r\n", GetLastError());
+		return FALSE;
+	}
+	if (!CreatePipe(&hStdInPipeRead, &htStdInPipeWrite, &sa, 0))
+	{
+		_err("[CMD] Failed Input pipe %x\r\n", GetLastError());
 		return FALSE;
 	}
 
-	// Redirection STDOUT/STDERR into pipe
+	//Redirection STDOUT/STDERR into pipe
 	si.cb = sizeof(STARTUPINFOA);
 	si.dwFlags = STARTF_USESTDHANDLES;
 	si.hStdError = hStdOutPipeWrite;
 	si.hStdOutput = hStdOutPipeWrite;
-	PCHAR cmdLine = strConcat(processName, args);
-	if (!CreateProcessA(processName, cmdLine, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &si, pi))
+	si.hStdInput = hStdInPipeRead;
+	if (!CreateProcessA(processName, processName, NULL, NULL, TRUE, CREATE_SUSPENDED, NULL, NULL, &si, pi))
 	{
-		_err("[-] ERROR: Cannot create process %s", processName);
+		_err("[-] ERROR: Cannot create process %s\r\n", processName);
 		return FALSE;
 	}
 	_dbg("[+] Launching process %s with PID: %d\r\n", processName, pi->dwProcessId);

@@ -36,16 +36,12 @@
         d = NULL; \
     }
 
-typedef struct WinFunctions
-{
-
-};
 
 BOOL readPipe(HANDLE hPipe, PVOID* data, PDWORD dataLen);
 
 BOOL loadPEFromDisk(LPCSTR peName, LPVOID& peContent);
 
-BOOL launchSuspendedProcess(LPSTR processName, LPPROCESS_INFORMATION pi, PCHAR args, HANDLE& hStdOutPipeRead);
+BOOL launchSuspendedProcess(LPSTR processName, LPPROCESS_INFORMATION pi, HANDLE & hStdOutPipeRead, HANDLE & htStdInPipeWrite);
 
 PCHAR strConcat(PCHAR str1, PCHAR str2);
 
